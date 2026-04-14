@@ -1,41 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server';
 
-export const dynamic = 'force-dynamic';
-export const runtime = 'nodejs';
-
-// 内存中的统计数据（Vercel Serverless 环境，每次请求独立，此处使用全局变量模拟会话级统计）
-// 生产环境建议替换为 Redis/数据库
-const stats: {
-  totalSearches: number;
-  totalResults: number;
-  totalErrors: number;
-  engineStats: Record<string, { searches: number; results: number; errors: number; avgResponseTime: number }>;
-  lastUpdated: number;
-  startTime: number;
-} = {
+// 内存中的统计数据
+const stats = {
   totalSearches: 0,
   totalResults: 0,
   totalErrors: 0,
-  engineStats: {},
+  engineStats: {} as Record<string, { searches: number; results: number; errors: number; avgResponseTime: number }>,
   lastUpdated: Date.now(),
   startTime: Date.now(),
 };
-
-function updateEngineStats(engine: string, results: number, responseTime: number, success: boolean) {
-  if (!stats.engineStats[engine]) {
-    stats.engineStats[engine] = { searches: 0, results: 0, errors: 0, avgResponseTime: 0 };
-  }
-  
-  const engineStat = stats.engineStats[engine];
-  engineStat.searches++;
-  engineStat.results += results;
-  if (!success) engineStat.errors++;
-  
-  // 移动平均响应时间
-  engineStat.avgResponseTime = engineStat.avgResponseTime === 0 
-    ? responseTime 
-    : (engineStat.avgResponseTime * 0.7 + responseTime * 0.3);
-}
 
 export async function GET(request: NextRequest) {
   const action = request.nextUrl.searchParams.get('action') || 'get';
@@ -45,7 +18,7 @@ export async function GET(request: NextRequest) {
     case 'get':
       return NextResponse.json({
         success: true,
-         {
+        data: {
           ...stats,
           uptime: Math.floor((Date.now() - stats.startTime) / 1000),
           searchesPerSecond: stats.totalSearches / Math.max(1, (Date.now() - stats.startTime) / 1000),
@@ -83,14 +56,21 @@ export async function POST(request: NextRequest) {
       if (!engine) {
         return NextResponse.json({ error: 'Engine is required' }, { status: 400 });
       }
-      
+
       stats.totalSearches++;
       stats.totalResults += results;
       if (!success) stats.totalErrors++;
       stats.lastUpdated = Date.now();
-      
-      updateEngineStats(engine, results, responseTime, success);
-      
+
+      // 更新引擎统计
+      if (!stats.engineStats[engine]) {
+        stats.engineStats[engine] = { searches: 0, results: 0, errors: 0, avgResponseTime: 0 };
+      }
+      const engineStat = stats.engineStats[engine];
+      engineStat.searches++;
+      engineStat.results += results;
+      if (!success) engineStat.errors++;
+
       return NextResponse.json({ success: true });
     }
 
@@ -109,14 +89,3 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Invalid JSON payload' }, { status: 400 });
   }
 }
-
-export async function DELETE(request: NextRequest) {
-  stats.totalSearches = 0;
-  stats.totalResults = 0;
-  stats.totalErrors = 0;
-  stats.engineStats = {};
-  stats.lastUpdated = Date.now();
-  stats.startTime = Date.now();
-  
-  return NextResponse.json({ success: true, message: 'All stats cleared' });
-  }
