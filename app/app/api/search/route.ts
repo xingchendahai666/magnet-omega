@@ -1,79 +1,101 @@
-import { NextRequest } from 'next/server';
-import { ENABLED_ENGINES } from '@/lib/engines/registry';
-import { searchYTS } from '@/lib/engines/tier1/yts';
-import { searchPirateBay } from '@/lib/engines/tier1/piratebay';
-import { mergeResults } from '@/lib/merger';
+import { NextRequest, NextResponse } from 'next/server';
+import { AdvancedCrawler } from '@/lib/crawler/AdvancedCrawler';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
+export const revalidate = 0;
 
-// 引擎适配器映射
-const ENGINE_ADAPTERS: Record<string, (q: string, cfg: any) => Promise<any[]>> = {
-  'yts': searchYTS,
-  'piratebay': searchPirateBay,
-  // 其他引擎按需添加...
-};
+const ENABLED_ENGINES = [
+  'piratebay',
+  '1337x',
+  'yts',
+  'nyaa',
+  'eztv',
+  'torlock',
+  'zooqle',
+  'magnetdl',
+];
 
 export async function GET(request: NextRequest) {
   const query = request.nextUrl.searchParams.get('q');
+  const engine = request.nextUrl.searchParams.get('engine');
+
   if (!query) {
-    return new Response('Missing query', { status: 400 });
+    return NextResponse.json({ error: 'Query is required' }, { status: 400 });
   }
 
-  // 创建 ReadableStream 实现 SSE
-  const stream = new ReadableStream({
-    async start(controller) {
-      const encoder = new TextEncoder();
-      const results: any[] = [];
-      const engineStatus: Record<string, string> = {};
-      
-      // 发送初始状态
-      controller.enqueue(encoder.encode(`event: status\n ${JSON.stringify({ phase: 'start', query, engines: ENABLED_ENGINES.length })}\n\n`));
+  const crawler = new AdvancedCrawler({
+    timeout: 15000,
+    retries: 2,
+  });
 
-      // 并行搜索所有启用的引擎
-      const promises = ENABLED_ENGINES.map(async (engine) => {
-        engineStatus[engine.id] = 'searching';
-        controller.enqueue(encoder.encode(`event: engine\n ${JSON.stringify({ id: engine.id, status: 'searching' })}\n\n`));
-        
+  try {
+    let results = [];
+
+    if (engine && engine !== 'all') {
+      const engineMethods: Record<string, () => Promise<any[]>> = {
+        'piratebay': () => crawler.crawlPirateBay(query),
+        '1337x': () => crawler.crawl1337x(query),
+        'yts': () => crawler.crawlYTS(query),
+        'nyaa': () => crawler.crawlNyaa(query),
+        'eztv': () => crawler.crawlEZTV(query),
+        'torlock': () => crawler.crawlTorlock(query),
+        'zooqle': () => crawler.crawlZooqle(query),
+        'magnetdl': () => crawler.crawlMagnetDL(query),
+      };
+
+      const crawlMethod = engineMethods[engine];
+      if (crawlMethod) {
+        results = await crawlMethod();
+      }
+    } else {
+      const promises = ENABLED_ENGINES.map(async (eng) => {
         try {
-          const adapter = ENGINE_ADAPTERS[engine.id];
-          if (!adapter) {
-            engineStatus[engine.id] = 'skipped';
-            return;
+          const engineMethods: Record<string, () => Promise<any[]>> = {
+            'piratebay': () => crawler.crawlPirateBay(query),
+            '1337x': () => crawler.crawl1337x(query),
+            'yts': () => crawler.crawlYTS(query),
+            'nyaa': () => crawler.crawlNyaa(query),
+            'eztv': () => crawler.crawlEZTV(query),
+            'torlock': () => crawler.crawlTorlock(query),
+            'zooqle': () => crawler.crawlZooqle(query),
+            'magnetdl': () => crawler.crawlMagnetDL(query),
+          };
+
+          const crawlMethod = engineMethods[eng];
+          if (crawlMethod) {
+            return await crawlMethod();
           }
-          
-          const engineResults = await adapter(query, engine);
-          results.push(...engineResults);
-          
-          engineStatus[engine.id] = 'done';
-          controller.enqueue(encoder.encode(`event: engine\n ${JSON.stringify({ id: engine.id, status: 'done', count: engineResults.length })}\n\n`));
-          
-          // 实时推送当前聚合结果
-          const merged = mergeResults([...results]);
-          controller.enqueue(encoder.encode(`event: results\n ${JSON.stringify({ results: merged.slice(0, 50), total: merged.length, engines: engineStatus })}\n\n`));
-          
-        } catch (error) {
-          engineStatus[engine.id] = 'error';
-          controller.enqueue(encoder.encode(`event: engine\n ${JSON.stringify({ id: engine.id, status: 'error', error: String(error) })}\n\n`));
+          return [];
+        } catch (err) {
+          console.error(`Engine ${eng} error:`, err);
+          return [];
         }
       });
 
-      await Promise.allSettled(promises);
-      
-      // 发送最终结果
-      const finalMerged = mergeResults(results);
-      controller.enqueue(encoder.encode(`event: results\n ${JSON.stringify({ results: finalMerged, total: finalMerged.length, engines: engineStatus, done: true })}\n\n`));
-      controller.enqueue(encoder.encode(`event: status\n ${JSON.stringify({ phase: 'done' })}\n\n`));
-      controller.close();
+      const allResults = await Promise.all(promises);
+      results = allResults.flat();
     }
-  });
 
-  return new Response(stream, {
-    headers: {
-      'Content-Type': 'text/event-stream',
-      'Cache-Control': 'no-cache',
-      'Connection': 'keep-alive',
-      'X-Accel-Buffering': 'no'
-    }
-  });
-        }
+    const uniqueResults = Array.from(
+      new Map(results.map((item: any) => [item.infoHash, item])).values()
+    );
+
+    uniqueResults.sort((a: any, b: any) => (b.seeds || 0) - (a.seeds || 0));
+
+    return NextResponse.json({
+      results: uniqueResults,
+      total: uniqueResults.length,
+      query,
+      timestamp: Date.now(),
+    });
+  } catch (error) {
+    console.error('Search error:', error);
+    return NextResponse.json({
+      error: 'Search failed',
+      message: error instanceof Error ? error.message : 'Unknown error',
+      results: [],
+      total: 0,
+    }, { status: 500 });
+  }
+}
