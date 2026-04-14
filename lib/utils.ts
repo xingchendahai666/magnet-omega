@@ -93,7 +93,9 @@ export function decodeHtmlEntities(text: string): string {
     .replace(/&amp;/g, '&')
     .replace(/&quot;/g, '"')
     .replace(/&#39;/g, "'")
-    .replace(/&nbsp;/g, ' ');
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&#x27;/g, "'")
+    .replace(/&#x2F;/g, '/');
 }
 
 export function getCategoryName(catId: string): string {
@@ -150,4 +152,31 @@ export function getCategoryName(catId: string): string {
     '699': 'Other',
   };
   return categories[catId] || 'Other';
+}
+
+export function parseDate(dateStr: string): number {
+  if (!dateStr) return Date.now();
+  
+  if (dateStr.includes('yesterday')) return Date.now() - 86400000;
+  if (dateStr.includes('today')) return Date.now();
+  if (dateStr.includes('yesterday')) return Date.now() - 86400000;
+  
+  const match = dateStr.match(/(\d+)\s*(second|minute|hour|day|week|month|year)s?/i);
+  if (match) {
+    const value = parseInt(match[1]);
+    const unit = match[2].toLowerCase();
+    const multipliers: Record<string, number> = {
+      'second': 1000,
+      'minute': 60000,
+      'hour': 3600000,
+      'day': 86400000,
+      'week': 604800000,
+      'month': 2592000000,
+      'year': 31536000000,
+    };
+    return Date.now() - (value * (multipliers[unit] || 1));
   }
+  
+  const date = new Date(dateStr);
+  return isNaN(date.getTime()) ? Date.now() : date.getTime();
+}
